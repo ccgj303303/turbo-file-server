@@ -18,7 +18,8 @@ from openpyxl.utils import get_column_letter
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
 
-API_TOKEN = os.environ.get("TURBO_API_TOKEN", "changeme123")
+API_TOKEN    = os.environ.get("TURBO_API_TOKEN", "changeme123")
+GOOGLE_KEY   = os.environ.get("GOOGLE_API_KEY", "")
 
 def check_auth(req):
     token = req.headers.get("X-Turbo-Token") or req.args.get("token")
@@ -286,30 +287,31 @@ def analyze():
             return jsonify({"error": "No se recibió payload JSON"}), 400
 
         file_id     = body.get("file_id", "")
-        oauth_token = body.get("oauth_token", "")
         instruction = body.get("instruction", "Analiza este archivo")
         filename    = body.get("filename", "archivo.xlsx")
 
         if not file_id:
             return jsonify({"error": "No se recibió file_id"}), 400
-        if not oauth_token:
-            return jsonify({"error": "No se recibió oauth_token"}), 400
 
-        # ── Descargar archivo directamente desde Google Drive ────────────
-        download_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
-        headers = {"Authorization": f"Bearer {oauth_token}"}
+        if not GOOGLE_KEY:
+            return jsonify({"error": "GOOGLE_API_KEY no configurada en Railway"}), 500
 
-        resp = requests.get(download_url, headers=headers, timeout=60)
+        # ── Descargar archivo desde Google Drive con API Key ─────────────
+        # Nota: el archivo debe ser público o compartido con "cualquiera con el link"
+        download_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key={GOOGLE_KEY}"
+        resp = requests.get(download_url, timeout=60)
 
         if resp.status_code == 403:
             return jsonify({
-                "error": "Acceso denegado a Google Drive. Verifica que el token tenga permisos de lectura.",
+                "error": "Acceso denegado. Asegúrate que el archivo en Drive esté compartido como 'Cualquiera con el link puede ver'.",
                 "status_code": 403
             }), 400
+        if resp.status_code == 404:
+            return jsonify({"error": "Archivo no encontrado en Drive. Verifica el link."}), 400
         if resp.status_code != 200:
             return jsonify({
                 "error": f"Error descargando de Drive: HTTP {resp.status_code}",
-                "detail": resp.text[:200]
+                "detail": resp.text[:300]
             }), 400
 
         buf = io.BytesIO(resp.content)
