@@ -1,11 +1,11 @@
 """
-Turbo File Server — Railway
-Genera PPTX y XLSX profesionales desde instrucciones de Claude.
+Turbo File Server — Railway v2
+Genera PPTX y XLSX. Analiza archivos de Google Drive directamente.
 Endpoints: POST /generate, POST /analyze, GET /health
 """
 
 from flask import Flask, request, jsonify
-import os, io, base64, traceback
+import os, io, base64, traceback, requests
 import pandas as pd
 from pptx import Presentation
 from pptx.util import Inches, Pt
@@ -32,21 +32,16 @@ def generate_pptx(payload):
     prs = Presentation()
     prs.slide_width  = Inches(13.33)
     prs.slide_height = Inches(7.5)
-
     themes = {
         "dark":  {"bg": "1A1A2E", "accent": "E94560", "text": "EAEAEA", "sub": "A0A0B0"},
         "light": {"bg": "FFFFFF", "accent": "2563EB", "text": "1F2937", "sub": "6B7280"},
         "blue":  {"bg": "0F3460", "accent": "E94560", "text": "FFFFFF",  "sub": "B0C4DE"},
     }
     t = themes.get(payload.get("theme", "dark"), themes["dark"])
-
     def rgb(h):
         h = h.lstrip("#")
         return RGBColor(int(h[0:2],16), int(h[2:4],16), int(h[4:6],16))
-
     blank = prs.slide_layouts[6]
-
-    # Title slide
     slide = prs.slides.add_slide(blank)
     bg = slide.background.fill; bg.solid(); bg.fore_color.rgb = rgb(t["bg"])
     bar = slide.shapes.add_shape(1, Inches(0), Inches(0), Inches(0.5), Inches(7.5))
@@ -60,8 +55,6 @@ def generate_pptx(payload):
     p2 = tf2.text_frame.paragraphs[0]; r2 = p2.add_run()
     r2.text = payload.get("subtitle", "")
     r2.font.size = Pt(20); r2.font.color.rgb = rgb(t["sub"])
-
-    # Content slides
     for idx, slide_data in enumerate(payload.get("slides", [])):
         slide = prs.slides.add_slide(blank)
         bg = slide.background.fill; bg.solid(); bg.fore_color.rgb = rgb(t["bg"])
@@ -93,15 +86,12 @@ def generate_pptx(payload):
         notes = slide_data.get("notes", "")
         if notes:
             slide.notes_slide.notes_text_frame.text = notes
-
-    # Closing slide
     slide = prs.slides.add_slide(blank)
     bg = slide.background.fill; bg.solid(); bg.fore_color.rgb = rgb(t["accent"])
     tf4 = slide.shapes.add_textbox(Inches(1), Inches(2.8), Inches(11), Inches(1.5))
     p4 = tf4.text_frame.paragraphs[0]; r4 = p4.add_run()
     r4.text = "Thank You"; r4.font.size = Pt(54); r4.font.bold = True
     r4.font.color.rgb = rgb("FFFFFF"); p4.alignment = PP_ALIGN.CENTER
-
     buf = io.BytesIO(); prs.save(buf); buf.seek(0)
     return buf.read()
 
@@ -124,7 +114,6 @@ def generate_xlsx(payload):
     LEFT   = Alignment(horizontal="left",   vertical="center")
     thin   = Side(style="thin", color="D0D7DE")
     BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
-
     for sheet_def in payload.get("sheets", []):
         ws = wb.create_sheet(title=sheet_def.get("name", "Report")[:31])
         headers  = sheet_def.get("headers", [])
@@ -166,19 +155,17 @@ def generate_xlsx(payload):
                 else max(len(str(header))+4, 14)
             )
         ws.freeze_panes = "A4"
-
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     return buf.read()
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# SHARED: read_dataframe — accepts multipart file OR base64 JSON
+# SHARED: read_dataframe
 # ══════════════════════════════════════════════════════════════════════════
 def read_dataframe(buf, filename):
     ext = filename.lower().split(".")[-1] if "." in filename else ""
     df = None
     errors = []
-
     if ext == "csv":
         for enc in ["utf-8", "latin-1", "cp1252"]:
             try:
@@ -198,10 +185,8 @@ def read_dataframe(buf, filename):
             ("openpyxl h=0",    lambda: pd.read_excel(buf, engine="openpyxl", header=0)),
             ("openpyxl h=1",    lambda: pd.read_excel(buf, engine="openpyxl", header=1)),
             ("openpyxl skip=1", lambda: pd.read_excel(buf, engine="openpyxl", skiprows=1)),
-            ("openpyxl sh=1",   lambda: pd.read_excel(buf, engine="openpyxl", sheet_name=1)),
             ("csv utf-8",       lambda: pd.read_csv(buf, encoding="utf-8")),
             ("csv latin-1",     lambda: pd.read_csv(buf, encoding="latin-1")),
-            ("csv sep=;",       lambda: pd.read_csv(buf, sep=";")),
         ]
         for label, attempt in attempts:
             try:
@@ -211,19 +196,16 @@ def read_dataframe(buf, filename):
                     df = result; break
             except Exception as e:
                 errors.append(f"{label}: {e}")
-
     return df, errors
 
 
 def build_analysis(df, filename, instruction):
-    # Clean unnamed columns and empty rows
     df.columns = [
         str(c) if not str(c).startswith("Unnamed") else f"Col_{i+1}"
         for i, c in enumerate(df.columns)
     ]
     df = df.dropna(how="all")
     rows, columns = df.shape
-
     insights = []
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
     for col in numeric_cols[:5]:
@@ -240,13 +222,11 @@ def build_analysis(df, filename, instruction):
     else:
         insights.append("✅ Sin valores nulos")
     insights.append(f"Total de registros: {rows:,}")
-
     data_preview = df.head(5).to_string(index=False, max_cols=8)
     col_list = ", ".join(df.columns.tolist()[:10])
     summary = f"Columnas: {col_list}" + (
         f" ... (+{len(df.columns)-10} más)" if len(df.columns) > 10 else ""
     )
-
     return {
         "success":      True,
         "filename":     filename,
@@ -265,7 +245,7 @@ def build_analysis(df, filename, instruction):
 # ══════════════════════════════════════════════════════════════════════════
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "Turbo File Server"})
+    return jsonify({"status": "ok", "service": "Turbo File Server v2"})
 
 
 @app.route("/generate", methods=["POST"])
@@ -301,30 +281,38 @@ def analyze():
     if not check_auth(request):
         return jsonify({"error": "Unauthorized"}), 401
     try:
-        # ── MODE 1: multipart/form-data (archivo directo desde n8n) ──────
-        if request.files and 'file' in request.files:
-            file        = request.files['file']
-            filename    = file.filename or 'archivo.xlsx'
-            instruction = request.form.get('instruction', 'Analiza este archivo')
-            buf         = io.BytesIO(file.read())
+        body = request.get_json(force=True, silent=True)
+        if not body:
+            return jsonify({"error": "No se recibió payload JSON"}), 400
 
-        # ── MODE 2: JSON con base64 (fallback) ───────────────────────────
-        else:
-            body = request.get_json(force=True, silent=True)
-            if not body:
-                return jsonify({"error": "No se recibió archivo ni payload JSON"}), 400
+        file_id     = body.get("file_id", "")
+        oauth_token = body.get("oauth_token", "")
+        instruction = body.get("instruction", "Analiza este archivo")
+        filename    = body.get("filename", "archivo.xlsx")
 
-            file_b64    = body.get("file_base64", "")
-            filename    = body.get("filename", "archivo.xlsx")
-            instruction = body.get("instruction", "Analiza este archivo")
+        if not file_id:
+            return jsonify({"error": "No se recibió file_id"}), 400
+        if not oauth_token:
+            return jsonify({"error": "No se recibió oauth_token"}), 400
 
-            if not file_b64:
-                return jsonify({"error": "No se recibió file_base64"}), 400
+        # ── Descargar archivo directamente desde Google Drive ────────────
+        download_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+        headers = {"Authorization": f"Bearer {oauth_token}"}
 
-            if "," in file_b64:
-                file_b64 = file_b64.split(",")[1]
-            file_b64 = file_b64.strip().replace("\n","").replace("\r","").replace(" ","")
-            buf = io.BytesIO(base64.b64decode(file_b64))
+        resp = requests.get(download_url, headers=headers, timeout=60)
+
+        if resp.status_code == 403:
+            return jsonify({
+                "error": "Acceso denegado a Google Drive. Verifica que el token tenga permisos de lectura.",
+                "status_code": 403
+            }), 400
+        if resp.status_code != 200:
+            return jsonify({
+                "error": f"Error descargando de Drive: HTTP {resp.status_code}",
+                "detail": resp.text[:200]
+            }), 400
+
+        buf = io.BytesIO(resp.content)
 
         # ── Leer el archivo ──────────────────────────────────────────────
         df, errors = read_dataframe(buf, filename)
