@@ -212,7 +212,6 @@ def analyze():
     if not check_auth(request):
         return jsonify({"error": "Unauthorized"}), 401
     try:
-        # FIX: silent=True evita crash si el payload es muy grande o malformado
         body = request.get_json(force=True, silent=True)
         if not body:
             return jsonify({"error": "Payload vacío o malformado. Verifica que el archivo no supere 50 MB."}), 400
@@ -224,43 +223,81 @@ def analyze():
         if not file_b64:
             return jsonify({"error": "No se recibió file_base64"}), 400
 
-        # FIX: limpiar prefijo data URI si viene de n8n (ej: "data:...;base64,XXXX")
+        # Limpiar prefijo data URI si viene de n8n
         if "," in file_b64:
             file_b64 = file_b64.split(",")[1]
 
-        # FIX: limpiar espacios/saltos que corrompan el base64
+        # Limpiar espacios y saltos de línea
         file_b64 = file_b64.strip().replace("\n", "").replace("\r", "").replace(" ", "")
 
         # Decodificar como bytes puros — NUNCA como UTF-8
         file_bytes = base64.b64decode(file_b64)
         buf = io.BytesIO(file_bytes)
 
-        # Detectar extensión y leer con el engine correcto
+        # ── LECTURA ROBUSTA ──────────────────────────────────────────────
         ext = filename.lower().split(".")[-1] if "." in filename else ""
+        df = None
+        errors = []
 
         if ext == "csv":
-            df = pd.read_csv(buf)
-        elif ext == "json":
-            df = pd.read_json(buf)
-        else:
-            # xlsx/xls/Google Sheets exportado — intentar openpyxl primero
-            try:
-                buf.seek(0)
-                df = pd.read_excel(buf, engine="openpyxl")
-            except Exception:
+            for enc in ["utf-8", "latin-1", "cp1252"]:
                 try:
                     buf.seek(0)
-                    df = pd.read_excel(buf, engine="xlrd")
-                except Exception:
+                    df = pd.read_csv(buf, encoding=enc)
+                    if len(df.columns) > 0:
+                        break
+                except Exception as e:
+                    errors.append(f"csv/{enc}: {e}")
+        elif ext == "json":
+            try:
+                buf.seek(0)
+                df = pd.read_json(buf)
+            except Exception as e:
+                errors.append(f"json: {e}")
+        else:
+            # Intentar todos los engines/configuraciones posibles
+            attempts = [
+                ("openpyxl header=0",   lambda: pd.read_excel(buf, engine="openpyxl", header=0)),
+                ("openpyxl header=1",   lambda: pd.read_excel(buf, engine="openpyxl", header=1)),
+                ("openpyxl skiprows=1", lambda: pd.read_excel(buf, engine="openpyxl", skiprows=1)),
+                ("openpyxl sheet=1",    lambda: pd.read_excel(buf, engine="openpyxl", sheet_name=1)),
+                ("xlrd",                lambda: pd.read_excel(buf, engine="xlrd")),
+                ("csv utf-8",           lambda: pd.read_csv(buf, encoding="utf-8")),
+                ("csv latin-1",         lambda: pd.read_csv(buf, encoding="latin-1")),
+                ("csv sep=;",           lambda: pd.read_csv(buf, sep=";")),
+            ]
+            for label, attempt in attempts:
+                try:
                     buf.seek(0)
-                    df = pd.read_csv(buf)
+                    result = attempt()
+                    if result is not None and len(result.columns) > 0 and len(result) > 0:
+                        df = result
+                        break
+                except Exception as e:
+                    errors.append(f"{label}: {e}")
+
+        if df is None or len(df.columns) == 0:
+            return jsonify({
+                "error": "No se pudo leer el archivo.",
+                "attempts": errors[:5],
+                "hint": "Verifica que el archivo tenga datos y no esté protegido con contraseña."
+            }), 500
+
+        # Limpiar columnas sin nombre (Unnamed)
+        df.columns = [
+            str(c) if not str(c).startswith("Unnamed") else f"Col_{i+1}"
+            for i, c in enumerate(df.columns)
+        ]
+
+        # Eliminar filas completamente vacías
+        df = df.dropna(how="all")
 
         rows, columns = df.shape
 
         # Insights numéricos
         insights = []
         numeric_cols = df.select_dtypes(include="number").columns.tolist()
-        for col in numeric_cols[:3]:
+        for col in numeric_cols[:5]:
             insights.append(
                 f"{col}: Total={df[col].sum():,.2f} | "
                 f"Avg={df[col].mean():,.2f} | "
@@ -279,7 +316,7 @@ def analyze():
         insights.append(f"Total de registros: {rows:,}")
 
         # Preview y resumen
-        data_preview = df.head(5).to_string(index=False, max_cols=6)
+        data_preview = df.head(5).to_string(index=False, max_cols=8)
         col_list = ", ".join(df.columns.tolist()[:10])
         summary = f"Columnas: {col_list}" + (
             f" ... (+{len(df.columns)-10} más)" if len(df.columns) > 10 else ""
