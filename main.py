@@ -340,21 +340,24 @@ def analyze():
         file_bytes = base64.b64decode(file_b64)
         buf = io.BytesIO(file_bytes)
 
-        # Load with pandas based on extension
-        ext = filename.lower().split(".")[-1]
-        if ext in ["xlsx", "xls"]:
-            df = pd.read_excel(buf)
-        elif ext == "csv":
+        # Load with pandas — force engine to avoid format detection errors
+        ext = filename.lower().split(".")[-1] if "." in filename else ""
+        
+        if ext == "csv":
             df = pd.read_csv(buf)
         elif ext == "json":
             df = pd.read_json(buf)
         else:
-            # Try excel first, then csv
             try:
-                df = pd.read_excel(buf)
-            except:
                 buf.seek(0)
-                df = pd.read_csv(buf)
+                df = pd.read_excel(buf, engine="openpyxl")
+            except Exception:
+                try:
+                    buf.seek(0)
+                    df = pd.read_excel(buf, engine="xlrd")
+                except Exception:
+                    buf.seek(0)
+                    df = pd.read_csv(buf)
 
         rows, columns = df.shape
 
@@ -406,3 +409,4 @@ def analyze():
 
     except Exception as e:
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+        xlrd==2.0.1
