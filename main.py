@@ -317,3 +317,92 @@ def generate():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ANALYZE ENDPOINT — procesa archivos de Google Drive con pandas
+# ══════════════════════════════════════════════════════════════════════════
+@app.route("/analyze", methods=["POST"])
+def analyze():
+    if not check_auth(request):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        import pandas as pd
+        import base64, io
+
+        body = request.get_json(force=True)
+        file_b64    = body.get("file_base64", "")
+        filename    = body.get("filename", "file.xlsx")
+        instruction = body.get("instruction", "")
+
+        # Decode file
+        file_bytes = base64.b64decode(file_b64)
+        buf = io.BytesIO(file_bytes)
+
+        # Load with pandas based on extension
+        ext = filename.lower().split(".")[-1]
+        if ext in ["xlsx", "xls"]:
+            df = pd.read_excel(buf)
+        elif ext == "csv":
+            df = pd.read_csv(buf)
+        elif ext == "json":
+            df = pd.read_json(buf)
+        else:
+            # Try excel first, then csv
+            try:
+                df = pd.read_excel(buf)
+            except:
+                buf.seek(0)
+                df = pd.read_csv(buf)
+
+        rows, columns = df.shape
+
+        # ── INSIGHTS ────────────────────────────────────────────────────
+        insights = []
+
+        # Numeric columns stats
+        numeric_cols = df.select_dtypes(include="number").columns.tolist()
+        for col in numeric_cols[:3]:  # top 3 numeric cols
+            total = df[col].sum()
+            avg   = df[col].mean()
+            mx    = df[col].max()
+            mn    = df[col].min()
+            insights.append(f"{col}: Total={total:,.2f} | Avg={avg:,.2f} | Max={mx:,.2f} | Min={mn:,.2f}")
+
+        # Null values
+        nulls = df.isnull().sum()
+        null_cols = nulls[nulls > 0]
+        if len(null_cols) > 0:
+            insights.append(f"⚠️ Valores nulos en: {', '.join(null_cols.index.tolist()[:5])}")
+        else:
+            insights.append("✅ Sin valores nulos")
+
+        # Row count insight
+        insights.append(f"Total de registros: {rows:,}")
+
+        # ── DATA PREVIEW (first 5 rows) ──────────────────────────────────
+        preview_df = df.head(5)
+        data_preview = preview_df.to_string(index=False, max_cols=6)
+
+        # ── SUMMARY ─────────────────────────────────────────────────────
+        col_list = ", ".join(df.columns.tolist()[:10])
+        summary = f"Columnas: {col_list}"
+        if len(df.columns) > 10:
+            summary += f" ... (+{len(df.columns)-10} más)"
+
+        # ── RESPOND ─────────────────────────────────────────────────────
+        return jsonify({
+            "success":      True,
+            "filename":     filename,
+            "rows":         rows,
+            "columns":      columns,
+            "col_names":    df.columns.tolist(),
+            "insights":     insights,
+            "summary":      summary,
+            "data_preview": data_preview,
+            "instruction":  instruction
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
