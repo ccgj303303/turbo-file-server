@@ -1,11 +1,11 @@
 """
-Turbo File Server — Railway v2
-Genera PPTX y XLSX. Analiza archivos de Google Drive directamente.
+Turbo File Server — Railway v4
+Genera PPTX y XLSX. Analiza CSV enviado como texto desde n8n.
 Endpoints: POST /generate, POST /analyze, GET /health
 """
 
 from flask import Flask, request, jsonify
-import os, io, base64, traceback, requests
+import os, io, base64, traceback
 import pandas as pd
 from pptx import Presentation
 from pptx.util import Inches, Pt
@@ -16,10 +16,9 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
-API_TOKEN    = os.environ.get("TURBO_API_TOKEN", "changeme123")
-GOOGLE_KEY   = os.environ.get("GOOGLE_API_KEY", "")
+API_TOKEN = os.environ.get("TURBO_API_TOKEN", "changeme123")
 
 def check_auth(req):
     token = req.headers.get("X-Turbo-Token") or req.args.get("token")
@@ -161,45 +160,8 @@ def generate_xlsx(payload):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# SHARED: read_dataframe
+# SHARED: build_analysis
 # ══════════════════════════════════════════════════════════════════════════
-def read_dataframe(buf, filename):
-    ext = filename.lower().split(".")[-1] if "." in filename else ""
-    df = None
-    errors = []
-    if ext == "csv":
-        for enc in ["utf-8", "latin-1", "cp1252"]:
-            try:
-                buf.seek(0)
-                df = pd.read_csv(buf, encoding=enc)
-                if len(df.columns) > 0:
-                    break
-            except Exception as e:
-                errors.append(f"csv/{enc}: {e}")
-    elif ext == "json":
-        try:
-            buf.seek(0); df = pd.read_json(buf)
-        except Exception as e:
-            errors.append(f"json: {e}")
-    else:
-        attempts = [
-            ("openpyxl h=0",    lambda: pd.read_excel(buf, engine="openpyxl", header=0)),
-            ("openpyxl h=1",    lambda: pd.read_excel(buf, engine="openpyxl", header=1)),
-            ("openpyxl skip=1", lambda: pd.read_excel(buf, engine="openpyxl", skiprows=1)),
-            ("csv utf-8",       lambda: pd.read_csv(buf, encoding="utf-8")),
-            ("csv latin-1",     lambda: pd.read_csv(buf, encoding="latin-1")),
-        ]
-        for label, attempt in attempts:
-            try:
-                buf.seek(0)
-                result = attempt()
-                if result is not None and len(result.columns) > 0 and len(result) > 0:
-                    df = result; break
-            except Exception as e:
-                errors.append(f"{label}: {e}")
-    return df, errors
-
-
 def build_analysis(df, filename, instruction):
     df.columns = [
         str(c) if not str(c).startswith("Unnamed") else f"Col_{i+1}"
@@ -246,7 +208,7 @@ def build_analysis(df, filename, instruction):
 # ══════════════════════════════════════════════════════════════════════════
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "Turbo File Server v2"})
+    return jsonify({"status": "ok", "service": "Turbo File Server v4"})
 
 
 @app.route("/generate", methods=["POST"])
@@ -286,44 +248,31 @@ def analyze():
         if not body:
             return jsonify({"error": "No se recibió payload JSON"}), 400
 
-        file_id     = body.get("file_id", "")
+        # ── Recibir CSV como texto desde n8n ─────────────────────────────
+        csv_text    = body.get("csv_text", "")
         instruction = body.get("instruction", "Analiza este archivo")
-        filename    = body.get("filename", "archivo.xlsx")
+        filename    = body.get("filename", "archivo.csv")
 
-        if not file_id:
-            return jsonify({"error": "No se recibió file_id"}), 400
+        if not csv_text:
+            return jsonify({"error": "No se recibió csv_text"}), 400
 
-        if not GOOGLE_KEY:
-            return jsonify({"error": "GOOGLE_API_KEY no configurada en Railway"}), 500
+        # ── Leer CSV desde el string de texto ────────────────────────────
+        df = None
+        errors = []
 
-        # ── Descargar archivo desde Google Drive con API Key ─────────────
-        # Nota: el archivo debe ser público o compartido con "cualquiera con el link"
-        download_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key={GOOGLE_KEY}"
-        resp = requests.get(download_url, timeout=60)
-
-        if resp.status_code == 403:
-            return jsonify({
-                "error": "Acceso denegado. Asegúrate que el archivo en Drive esté compartido como 'Cualquiera con el link puede ver'.",
-                "status_code": 403
-            }), 400
-        if resp.status_code == 404:
-            return jsonify({"error": "Archivo no encontrado en Drive. Verifica el link."}), 400
-        if resp.status_code != 200:
-            return jsonify({
-                "error": f"Error descargando de Drive: HTTP {resp.status_code}",
-                "detail": resp.text[:300]
-            }), 400
-
-        buf = io.BytesIO(resp.content)
-
-        # ── Leer el archivo ──────────────────────────────────────────────
-        df, errors = read_dataframe(buf, filename)
+        for enc in ["utf-8", "latin-1", "cp1252"]:
+            try:
+                buf = io.StringIO(csv_text)
+                df = pd.read_csv(buf)
+                if len(df.columns) > 0 and len(df) > 0:
+                    break
+            except Exception as e:
+                errors.append(f"csv/{enc}: {e}")
 
         if df is None or len(df.columns) == 0:
             return jsonify({
-                "error":    "No se pudo leer el archivo.",
-                "attempts": errors[:5],
-                "hint":     "Verifica que el archivo tenga datos y no esté protegido."
+                "error": "No se pudo leer el CSV.",
+                "attempts": errors[:3]
             }), 500
 
         return jsonify(build_analysis(df, filename, instruction))
