@@ -16,12 +16,14 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
 
 API_TOKEN = os.environ.get("TURBO_API_TOKEN", "changeme123")
 
 def check_auth(req):
     token = req.headers.get("X-Turbo-Token") or req.args.get("token")
     return token == API_TOKEN
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # PPTX GENERATOR
@@ -154,11 +156,15 @@ def generate_xlsx(payload):
             ws.cell(row=total_row, column=1).fill = TOTAL_FILL
             for col_idx in range(2, len(headers)+1):
                 col_letter = get_column_letter(col_idx)
-                c = ws.cell(row=total_row, column=col_idx, value=f"=SUM({col_letter}4:{col_letter}{total_row-1})")
+                c = ws.cell(row=total_row, column=col_idx,
+                            value=f"=SUM({col_letter}4:{col_letter}{total_row-1})")
                 c.font = TOTAL_FONT; c.fill = TOTAL_FILL; c.alignment = CENTER; c.border = BORDER
         for col_idx, header in enumerate(headers, 1):
             col_letter = get_column_letter(col_idx)
-            ws.column_dimensions[col_letter].width = widths[col_idx-1] if widths and col_idx <= len(widths) else max(len(str(header))+4, 14)
+            ws.column_dimensions[col_letter].width = (
+                widths[col_idx-1] if widths and col_idx <= len(widths)
+                else max(len(str(header))+4, 14)
+            )
         ws.freeze_panes = "A4"
 
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
@@ -193,8 +199,10 @@ def generate():
         else:
             return jsonify({"error": f"Unknown type: {file_type}"}), 400
         encoded = base64.b64encode(file_bytes).decode("utf-8")
-        return jsonify({"success": True, "type": ext, "filename": f"{filename}.{ext}",
-                        "mime": mime, "size_bytes": len(file_bytes), "data_base64": encoded})
+        return jsonify({
+            "success": True, "type": ext, "filename": f"{filename}.{ext}",
+            "mime": mime, "size_bytes": len(file_bytes), "data_base64": encoded
+        })
     except Exception as e:
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
@@ -204,45 +212,91 @@ def analyze():
     if not check_auth(request):
         return jsonify({"error": "Unauthorized"}), 401
     try:
-        body        = request.get_json(force=True)
+        # FIX: silent=True evita crash si el payload es muy grande o malformado
+        body = request.get_json(force=True, silent=True)
+        if not body:
+            return jsonify({"error": "Payload vacío o malformado. Verifica que el archivo no supere 50 MB."}), 400
+
         file_b64    = body.get("file_base64", "")
         filename    = body.get("filename", "file.xlsx")
         instruction = body.get("instruction", "")
 
+        if not file_b64:
+            return jsonify({"error": "No se recibió file_base64"}), 400
+
+        # FIX: limpiar prefijo data URI si viene de n8n (ej: "data:...;base64,XXXX")
+        if "," in file_b64:
+            file_b64 = file_b64.split(",")[1]
+
+        # FIX: limpiar espacios/saltos que corrompan el base64
+        file_b64 = file_b64.strip().replace("\n", "").replace("\r", "").replace(" ", "")
+
+        # Decodificar como bytes puros — NUNCA como UTF-8
         file_bytes = base64.b64decode(file_b64)
         buf = io.BytesIO(file_bytes)
 
-        # Force engine to avoid format detection errors
+        # Detectar extensión y leer con el engine correcto
         ext = filename.lower().split(".")[-1] if "." in filename else ""
+
         if ext == "csv":
             df = pd.read_csv(buf)
         elif ext == "json":
             df = pd.read_json(buf)
         else:
+            # xlsx/xls/Google Sheets exportado — intentar openpyxl primero
             try:
-                buf.seek(0); df = pd.read_excel(buf, engine="openpyxl")
+                buf.seek(0)
+                df = pd.read_excel(buf, engine="openpyxl")
             except Exception:
                 try:
-                    buf.seek(0); df = pd.read_excel(buf, engine="xlrd")
+                    buf.seek(0)
+                    df = pd.read_excel(buf, engine="xlrd")
                 except Exception:
-                    buf.seek(0); df = pd.read_csv(buf)
+                    buf.seek(0)
+                    df = pd.read_csv(buf)
 
         rows, columns = df.shape
+
+        # Insights numéricos
         insights = []
         numeric_cols = df.select_dtypes(include="number").columns.tolist()
         for col in numeric_cols[:3]:
-            insights.append(f"{col}: Total={df[col].sum():,.2f} | Avg={df[col].mean():,.2f} | Max={df[col].max():,.2f} | Min={df[col].min():,.2f}")
+            insights.append(
+                f"{col}: Total={df[col].sum():,.2f} | "
+                f"Avg={df[col].mean():,.2f} | "
+                f"Max={df[col].max():,.2f} | "
+                f"Min={df[col].min():,.2f}"
+            )
+
+        # Valores nulos
         nulls = df.isnull().sum()
         null_cols = nulls[nulls > 0]
-        insights.append(f"⚠️ Valores nulos en: {', '.join(null_cols.index.tolist()[:5])}" if len(null_cols) > 0 else "✅ Sin valores nulos")
+        if len(null_cols) > 0:
+            insights.append(f"⚠️ Valores nulos en: {', '.join(null_cols.index.tolist()[:5])}")
+        else:
+            insights.append("✅ Sin valores nulos")
+
         insights.append(f"Total de registros: {rows:,}")
+
+        # Preview y resumen
         data_preview = df.head(5).to_string(index=False, max_cols=6)
         col_list = ", ".join(df.columns.tolist()[:10])
-        summary = f"Columnas: {col_list}" + (f" ... (+{len(df.columns)-10} más)" if len(df.columns) > 10 else "")
+        summary = f"Columnas: {col_list}" + (
+            f" ... (+{len(df.columns)-10} más)" if len(df.columns) > 10 else ""
+        )
 
-        return jsonify({"success": True, "filename": filename, "rows": rows, "columns": columns,
-                        "col_names": df.columns.tolist(), "insights": insights,
-                        "summary": summary, "data_preview": data_preview, "instruction": instruction})
+        return jsonify({
+            "success":      True,
+            "filename":     filename,
+            "rows":         rows,
+            "columns":      columns,
+            "col_names":    df.columns.tolist(),
+            "insights":     insights,
+            "summary":      summary,
+            "data_preview": data_preview,
+            "instruction":  instruction
+        })
+
     except Exception as e:
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
