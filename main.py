@@ -29,69 +29,153 @@ def check_auth(req):
 # PPTX GENERATOR
 # ══════════════════════════════════════════════════════════════════════════
 def generate_pptx(payload):
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import PP_ALIGN
+    import io
+
     prs = Presentation()
     prs.slide_width  = Inches(13.33)
     prs.slide_height = Inches(7.5)
-    themes = {
-        "dark":  {"bg": "1A1A2E", "accent": "E94560", "text": "EAEAEA", "sub": "A0A0B0"},
-        "light": {"bg": "FFFFFF", "accent": "2563EB", "text": "1F2937", "sub": "6B7280"},
-        "blue":  {"bg": "0F3460", "accent": "E94560", "text": "FFFFFF",  "sub": "B0C4DE"},
+
+    # ── Paleta Finvivir ──────────────────────────────────────────────────────
+    C = {
+        "blue":        "3B8DBD",
+        "purple":      "7B3F7A",
+        "dark_blue":   "1A3A5C",
+        "gray":        "8A8A8A",
+        "light_blue":  "EAF4FB",
+        "light_gray":  "F5F5F7",
+        "white":       "FFFFFF",
     }
-    t = themes.get(payload.get("theme", "dark"), themes["dark"])
+
     def rgb(h):
         h = h.lstrip("#")
-        return RGBColor(int(h[0:2],16), int(h[2:4],16), int(h[4:6],16))
+        return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+    def rect(slide, x, y, w, h, color):
+        s = slide.shapes.add_shape(1, Inches(x), Inches(y), Inches(w), Inches(h))
+        s.fill.solid(); s.fill.fore_color.rgb = rgb(color); s.line.fill.background()
+        return s
+
+    def textbox(slide, text, x, y, w, h, size,
+                bold=False, italic=False, color="dark_blue",
+                align=PP_ALIGN.LEFT, font="Calibri Light"):
+        tb = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
+        tf = tb.text_frame; tf.word_wrap = True
+        p  = tf.paragraphs[0]; run = p.add_run()
+        run.text = text
+        run.font.size = Pt(size); run.font.bold = bold
+        run.font.italic = italic; run.font.name = font
+        run.font.color.rgb = rgb(C[color])
+        p.alignment = align
+        return tb
+
     blank = prs.slide_layouts[6]
+
+    # ── PORTADA ──────────────────────────────────────────────────────────────
     slide = prs.slides.add_slide(blank)
-    bg = slide.background.fill; bg.solid(); bg.fore_color.rgb = rgb(t["bg"])
-    bar = slide.shapes.add_shape(1, Inches(0), Inches(0), Inches(0.5), Inches(7.5))
-    bar.fill.solid(); bar.fill.fore_color.rgb = rgb(t["accent"]); bar.line.fill.background()
-    tf = slide.shapes.add_textbox(Inches(1), Inches(2.2), Inches(11), Inches(1.8))
-    p = tf.text_frame.paragraphs[0]; run = p.add_run()
-    run.text = payload.get("title", "Presentation")
-    run.font.size = Pt(44); run.font.bold = True
-    run.font.color.rgb = rgb(t["text"]); p.alignment = PP_ALIGN.LEFT
-    tf2 = slide.shapes.add_textbox(Inches(1), Inches(4.2), Inches(11), Inches(0.8))
-    p2 = tf2.text_frame.paragraphs[0]; r2 = p2.add_run()
-    r2.text = payload.get("subtitle", "")
-    r2.font.size = Pt(20); r2.font.color.rgb = rgb(t["sub"])
+    bg = slide.background.fill; bg.solid(); bg.fore_color.rgb = rgb(C["white"])
+
+    # Panel derecho azul (45 % del ancho)
+    rect(slide, 7.33, 0,    6.0,  7.5,  C["blue"])
+    # Barra morada delgada de separación
+    rect(slide, 7.13, 0,    0.2,  7.5,  C["purple"])
+    # Acento morado inferior izquierdo
+    rect(slide, 0,    6.9,  3.0,  0.6,  C["purple"])
+    # Cuadrado decorativo blanco en panel derecho
+    rect(slide, 11.8, 5.8,  1.2,  1.2,  C["dark_blue"])
+
+    # Título
+    textbox(slide, payload.get("title", "Presentación"),
+            0.6, 1.6, 6.3, 2.2, 42, bold=True, color="dark_blue", font="Calibri")
+    # Subtítulo
+    textbox(slide, payload.get("subtitle", ""),
+            0.6, 4.0, 6.2, 0.9, 18, color="gray", font="Calibri Light")
+    # Slogan en panel derecho
+    textbox(slide, "Abrazamos tu Futuro",
+            7.7, 6.5, 5.3, 0.7, 13, italic=True, color="white",
+            align=PP_ALIGN.RIGHT, font="Calibri Light")
+
+    # ── SLIDES DE CONTENIDO ──────────────────────────────────────────────────
     for idx, slide_data in enumerate(payload.get("slides", [])):
         slide = prs.slides.add_slide(blank)
-        bg = slide.background.fill; bg.solid(); bg.fore_color.rgb = rgb(t["bg"])
-        bar = slide.shapes.add_shape(1, Inches(0), Inches(0), Inches(13.33), Inches(0.12))
-        bar.fill.solid(); bar.fill.fore_color.rgb = rgb(t["accent"]); bar.line.fill.background()
-        num_box = slide.shapes.add_textbox(Inches(11.5), Inches(6.9), Inches(1.5), Inches(0.4))
-        np2 = num_box.text_frame.paragraphs[0]; nr = np2.add_run()
-        nr.text = str(idx + 2); nr.font.size = Pt(11); nr.font.color.rgb = rgb(t["sub"])
-        np2.alignment = PP_ALIGN.RIGHT
-        title_box = slide.shapes.add_textbox(Inches(0.6), Inches(0.25), Inches(12), Inches(0.85))
-        tp = title_box.text_frame.paragraphs[0]; tr = tp.add_run()
-        tr.text = slide_data.get("title", "")
-        tr.font.size = Pt(28); tr.font.bold = True; tr.font.color.rgb = rgb(t["text"])
-        line = slide.shapes.add_shape(1, Inches(0.6), Inches(1.2), Inches(11.5), Inches(0.04))
-        line.fill.solid(); line.fill.fore_color.rgb = rgb(t["accent"]); line.line.fill.background()
+        bg = slide.background.fill; bg.solid(); bg.fore_color.rgb = rgb(C["white"])
+
+        # Barra azul superior
+        rect(slide, 0,    0,    13.33, 0.07, C["blue"])
+        # Franja morada izquierda
+        rect(slide, 0,    0.07, 0.07,  7.08, C["purple"])
+        # Zona de header gris muy suave
+        rect(slide, 0.07, 0.07, 13.26, 1.05, C["light_gray"])
+
+        # Título del slide
+        textbox(slide, slide_data.get("title", ""),
+                0.55, 0.14, 11.8, 0.9, 26, bold=True,
+                color="dark_blue", font="Calibri")
+
+        # Número de página
+        textbox(slide, str(idx + 2),
+                12.3, 0.18, 0.8, 0.5, 11, color="gray",
+                align=PP_ALIGN.RIGHT, font="Calibri Light")
+
+        # Footer
+        rect(slide, 0, 7.15, 13.33, 0.35, C["light_gray"])
+        rect(slide, 0, 7.13, 13.33, 0.02, C["blue"])
+        textbox(slide, "Finvivir  ·  Abrazamos tu Futuro",
+                0.55, 7.18, 9.0, 0.28, 9, color="gray", font="Calibri Light")
+
+        # Bullets
         bullets = slide_data.get("bullets", [])
         if bullets:
-            content_box = slide.shapes.add_textbox(Inches(0.6), Inches(1.4), Inches(11.5), Inches(5.5))
-            tf3 = content_box.text_frame; tf3.word_wrap = True
-            for i, bullet in enumerate(bullets):
-                p3 = tf3.paragraphs[0] if i == 0 else tf3.add_paragraph()
-                p3.space_before = Pt(6); run = p3.add_run()
-                if bullet.startswith("  ") or bullet.startswith("- "):
-                    run.text = "    › " + bullet.lstrip(" -").strip()
-                    run.font.size = Pt(16); run.font.color.rgb = rgb(t["sub"])
+            y = 1.38
+            for bullet in bullets:
+                is_sub = bullet.startswith("  ") or bullet.startswith("- ")
+                text   = bullet.lstrip(" -").strip()
+
+                if is_sub:
+                    # Sub-bullet: línea morada delgada + texto gris
+                    rect(slide, 0.75, y + 0.13, 0.18, 0.03, C["purple"])
+                    textbox(slide, text, 1.1, y, 11.5, 0.44,
+                            13, color="gray", font="Calibri Light")
+                    y += 0.48
                 else:
-                    run.text = "▸  " + bullet.strip()
-                    run.font.size = Pt(18); run.font.color.rgb = rgb(t["text"])
+                    # Bullet principal: tarjeta con borde izquierdo azul
+                    rect(slide, 0.45, y,       0.06, 0.52, C["blue"])
+                    rect(slide, 0.51, y,       11.37, 0.52, C["light_gray"])
+                    textbox(slide, text, 0.72, y + 0.02, 11.0, 0.48,
+                            16, bold=True, color="dark_blue", font="Calibri")
+                    y += 0.66
+
         notes = slide_data.get("notes", "")
         if notes:
             slide.notes_slide.notes_text_frame.text = notes
+
+    # ── SLIDE FINAL ──────────────────────────────────────────────────────────
     slide = prs.slides.add_slide(blank)
-    bg = slide.background.fill; bg.solid(); bg.fore_color.rgb = rgb(t["accent"])
-    tf4 = slide.shapes.add_textbox(Inches(1), Inches(2.8), Inches(11), Inches(1.5))
-    p4 = tf4.text_frame.paragraphs[0]; r4 = p4.add_run()
-    r4.text = "Thank You"; r4.font.size = Pt(54); r4.font.bold = True
-    r4.font.color.rgb = rgb("FFFFFF"); p4.alignment = PP_ALIGN.CENTER
+    bg = slide.background.fill; bg.solid(); bg.fore_color.rgb = rgb(C["blue"])
+
+    # Panel morado izquierdo
+    rect(slide, 0,    0,    4.8,  7.5,  C["purple"])
+    # Cuadrado decorativo azul oscuro esquina superior derecha
+    rect(slide, 11.5, 0,    1.83, 1.6,  C["dark_blue"])
+    # Acento blanco pequeño
+    rect(slide, 4.8,  6.5,  8.53, 0.06, C["white"])
+
+    # Texto principal
+    textbox(slide, "Abrazamos",
+            5.2, 2.0, 7.7, 1.3, 52, bold=True,
+            color="white", font="Calibri")
+    textbox(slide, "tu Futuro",
+            5.2, 3.2, 7.7, 1.3, 52,
+            color="white", font="Calibri Light")
+
+    # Título en panel morado
+    textbox(slide, payload.get("title", ""),
+            0.4, 5.6, 4.0, 1.2, 13, italic=True,
+            color="white", font="Calibri Light")
+
     buf = io.BytesIO(); prs.save(buf); buf.seek(0)
     return buf.read()
 
