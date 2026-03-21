@@ -102,14 +102,14 @@ def generate_pptx(payload):
 def generate_xlsx(payload):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
-    HEADER_FILL = PatternFill("solid", fgColor="1A3A5C")
-    ACCENT_FILL = PatternFill("solid", fgColor="E94560")
-    ALT_FILL    = PatternFill("solid", fgColor="F0F4F8")
-    TOTAL_FILL  = PatternFill("solid", fgColor="E8F0FE")
+    HEADER_FILL = PatternFill("solid", fgColor="3B8DBD")   # Azul Finvivir
+    ACCENT_FILL = PatternFill("solid", fgColor="7B3F7A")   # Morado Finvivir
+    ALT_FILL    = PatternFill("solid", fgColor="EAF4FB")   # Azul muy claro
+    TOTAL_FILL  = PatternFill("solid", fgColor="F3EDF7")   # Lila muy claro
     HEADER_FONT = Font(name="Arial", bold=True, color="FFFFFF", size=11)
-    TITLE_FONT  = Font(name="Arial", bold=True, color="1A3A5C", size=14)
+    TITLE_FONT  = Font(name="Arial", bold=True, color="3B8DBD", size=14)
     DATA_FONT   = Font(name="Arial", size=10)
-    TOTAL_FONT  = Font(name="Arial", bold=True, color="1A3A5C", size=11)
+    TOTAL_FONT  = Font(name="Arial", bold=True, color="3B8DBD", size=11)
     CENTER = Alignment(horizontal="center", vertical="center")
     LEFT   = Alignment(horizontal="left",   vertical="center")
     thin   = Side(style="thin", color="D0D7DE")
