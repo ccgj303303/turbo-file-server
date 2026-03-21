@@ -123,7 +123,7 @@ def generate_pptx(payload):
         # Footer
         rect(slide, 0, 7.15, 13.33, 0.35, C["light_gray"])
         rect(slide, 0, 7.13, 13.33, 0.02, C["blue"])
-        textbox(slide, "Finvivir  ·  Abrazamos tu Futuro",
+        textbox(slide, "Finvivir  ·  Changing Lifes",
                 0.55, 7.18, 9.0, 0.28, 9, color="gray", font="Calibri Light")
 
         # Bullets
