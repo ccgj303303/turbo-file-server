@@ -94,7 +94,7 @@ def generate_pptx(payload):
     textbox(slide, payload.get("subtitle", ""),
             0.6, 4.0, 6.2, 0.9, 18, color="gray", font="Calibri Light")
     # Slogan en panel derecho
-    textbox(slide, "Abrazamos tu Futuro",
+    textbox(slide, "Changing Lifes",
             7.7, 6.5, 5.3, 0.7, 13, italic=True, color="white",
             align=PP_ALIGN.RIGHT, font="Calibri Light")
 
@@ -164,10 +164,10 @@ def generate_pptx(payload):
     rect(slide, 4.8,  6.5,  8.53, 0.06, C["white"])
 
     # Texto principal
-    textbox(slide, "Abrazamos",
+    textbox(slide, "Changing",
             5.2, 2.0, 7.7, 1.3, 52, bold=True,
             color="white", font="Calibri")
-    textbox(slide, "tu Futuro",
+    textbox(slide, "Lifes",
             5.2, 3.2, 7.7, 1.3, 52,
             color="white", font="Calibri Light")
 
