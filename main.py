@@ -183,65 +183,145 @@ def generate_pptx(payload):
 # ══════════════════════════════════════════════════════════════════════════
 # XLSX GENERATOR
 # ══════════════════════════════════════════════════════════════════════════
+import io
+import openpyxl
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+
+
 def generate_xlsx(payload):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
+
+    # ── Estilos Finvivir ─────────────────────────────────────────────────────
     HEADER_FILL = PatternFill("solid", fgColor="3B8DBD")   # Azul Finvivir
     ACCENT_FILL = PatternFill("solid", fgColor="7B3F7A")   # Morado Finvivir
     ALT_FILL    = PatternFill("solid", fgColor="EAF4FB")   # Azul muy claro
     TOTAL_FILL  = PatternFill("solid", fgColor="F3EDF7")   # Lila muy claro
-    HEADER_FONT = Font(name="Arial", bold=True, color="FFFFFF", size=11)
-    TITLE_FONT  = Font(name="Arial", bold=True, color="3B8DBD", size=14)
-    DATA_FONT   = Font(name="Arial", size=10)
-    TOTAL_FONT  = Font(name="Arial", bold=True, color="3B8DBD", size=11)
+
+    HEADER_FONT = Font(name="Calibri", bold=True,  color="FFFFFF", size=11)
+    TITLE_FONT  = Font(name="Calibri", bold=True,  color="3B8DBD", size=14)
+    DATA_FONT   = Font(name="Calibri",              color="1A3A5C", size=10)
+    TOTAL_FONT  = Font(name="Calibri", bold=True,  color="3B8DBD", size=11)
+    SUB_FONT    = Font(name="Calibri", italic=True, color="8A8A8A", size=9)
+
     CENTER = Alignment(horizontal="center", vertical="center")
-    LEFT   = Alignment(horizontal="left",   vertical="center")
-    thin   = Side(style="thin", color="D0D7DE")
-    BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
+    LEFT   = Alignment(horizontal="left",   vertical="center", wrap_text=True)
+
+    thin   = Side(style="thin",   color="D0D7DE")
+    thick  = Side(style="medium", color="3B8DBD")
+    BORDER       = Border(left=thin,  right=thin,  top=thin,  bottom=thin)
+    HEADER_BORDER = Border(left=thin, right=thin, top=thick, bottom=thick)
+
+    # ── Sheets ───────────────────────────────────────────────────────────────
     for sheet_def in payload.get("sheets", []):
         ws = wb.create_sheet(title=sheet_def.get("name", "Report")[:31])
-        headers  = sheet_def.get("headers", [])
-        rows     = sheet_def.get("rows", [])
-        do_total = sheet_def.get("totals", False)
-        widths   = sheet_def.get("col_widths", [])
-        ws.row_dimensions[1].height = 30
+
+        headers      = sheet_def.get("headers", [])
+        rows         = sheet_def.get("rows", [])
+        do_total     = sheet_def.get("totals", False)
+        widths       = sheet_def.get("col_widths", [])
+        # dict col_index (1-based) -> template de fórmula con {row}
+        # ej. {4: "=B{row}*C{row}", 5: "=IF(D{row}>100,\"Alto\",\"Bajo\")"}
+        col_formulas = sheet_def.get("col_formulas", {})
+
+        n_cols = len(headers)
+
+        # ── Fila 1: Título ───────────────────────────────────────────────────
+        ws.row_dimensions[1].height = 32
         title_cell = ws.cell(row=1, column=1, value=payload.get("title", "Report"))
-        title_cell.font = TITLE_FONT; title_cell.alignment = LEFT
-        if headers:
-            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
-        for col in range(1, len(headers)+1):
-            ws.cell(row=2, column=col, value="").fill = ACCENT_FILL
-        ws.row_dimensions[3].height = 22
+        title_cell.font      = TITLE_FONT
+        title_cell.alignment = LEFT
+        if n_cols > 1:
+            ws.merge_cells(start_row=1, start_column=1,
+                           end_row=1,   end_column=n_cols)
+
+        # ── Fila 2: Subtítulo (opcional) ─────────────────────────────────────
+        subtitle = payload.get("subtitle", "")
+        ws.row_dimensions[2].height = 16
+        if subtitle:
+            sub_cell = ws.cell(row=2, column=1, value=subtitle)
+            sub_cell.font      = SUB_FONT
+            sub_cell.alignment = LEFT
+            if n_cols > 1:
+                ws.merge_cells(start_row=2, start_column=1,
+                               end_row=2,   end_column=n_cols)
+        else:
+            # Franja decorativa morada si no hay subtítulo
+            for col in range(1, n_cols + 1):
+                ws.cell(row=2, column=col).fill = ACCENT_FILL
+            ws.row_dimensions[2].height = 6
+
+        # ── Fila 3: Headers ──────────────────────────────────────────────────
+        ws.row_dimensions[3].height = 24
         for col_idx, header in enumerate(headers, 1):
             c = ws.cell(row=3, column=col_idx, value=header)
-            c.font = HEADER_FONT; c.fill = HEADER_FILL; c.alignment = CENTER; c.border = BORDER
+            c.font      = HEADER_FONT
+            c.fill      = HEADER_FILL
+            c.alignment = CENTER
+            c.border    = HEADER_BORDER
+
+        # ── Filas de datos ───────────────────────────────────────────────────
         for row_idx, row_data in enumerate(rows, 4):
             ws.row_dimensions[row_idx].height = 18
-            for col_idx, value in enumerate(row_data, 1):
+            for col_idx in range(1, n_cols + 1):
+                # Valor crudo (puede ser None si hay fórmula de columna)
+                value = row_data[col_idx - 1] if col_idx <= len(row_data) else None
+
+                # Fórmula de columna tiene prioridad si el valor es None o vacío
+                if col_idx in col_formulas and value in (None, ""):
+                    value = col_formulas[col_idx].replace("{row}", str(row_idx))
+
                 c = ws.cell(row=row_idx, column=col_idx, value=value)
-                c.font = DATA_FONT; c.border = BORDER
-                c.alignment = CENTER if isinstance(value, (int,float)) else LEFT
-                if row_idx % 2 == 0: c.fill = ALT_FILL
+                c.font   = DATA_FONT
+                c.border = BORDER
+                if row_idx % 2 == 0:
+                    c.fill = ALT_FILL
+
+                # Alineación: centrado para números y fórmulas, izquierda para texto
+                is_formula = isinstance(value, str) and value.startswith("=")
+                is_number  = isinstance(value, (int, float))
+                c.alignment = CENTER if (is_number or is_formula) else LEFT
+
+        # ── Fila de totales ──────────────────────────────────────────────────
         if do_total and rows:
             total_row = len(rows) + 4
             ws.row_dimensions[total_row].height = 22
-            ws.cell(row=total_row, column=1, value="TOTAL").font = TOTAL_FONT
-            ws.cell(row=total_row, column=1).fill = TOTAL_FILL
-            for col_idx in range(2, len(headers)+1):
+
+            total_label = ws.cell(row=total_row, column=1, value="TOTAL")
+            total_label.font      = TOTAL_FONT
+            total_label.fill      = TOTAL_FILL
+            total_label.alignment = LEFT
+            total_label.border    = BORDER
+
+            for col_idx in range(2, n_cols + 1):
                 col_letter = get_column_letter(col_idx)
-                c = ws.cell(row=total_row, column=col_idx,
-                            value=f"=SUM({col_letter}4:{col_letter}{total_row-1})")
-                c.font = TOTAL_FONT; c.fill = TOTAL_FILL; c.alignment = CENTER; c.border = BORDER
+                formula    = f"=SUM({col_letter}4:{col_letter}{total_row - 1})"
+                c = ws.cell(row=total_row, column=col_idx, value=formula)
+                c.font      = TOTAL_FONT
+                c.fill      = TOTAL_FILL
+                c.alignment = CENTER
+                c.border    = BORDER
+
+        # ── Anchos de columna ────────────────────────────────────────────────
         for col_idx, header in enumerate(headers, 1):
             col_letter = get_column_letter(col_idx)
-            ws.column_dimensions[col_letter].width = (
-                widths[col_idx-1] if widths and col_idx <= len(widths)
-                else max(len(str(header))+4, 14)
-            )
-        ws.freeze_panes = "A4"
-    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
-    return buf.read()
+            if widths and col_idx <= len(widths):
+                ws.column_dimensions[col_letter].width = widths[col_idx - 1]
+            else:
+                ws.column_dimensions[col_letter].width = max(len(str(header)) + 4, 14)
 
+        # ── Freeze + auto-filter ─────────────────────────────────────────────
+        ws.freeze_panes = "A4"
+        if n_cols:
+            ws.auto_filter.ref = (
+                f"A3:{get_column_letter(n_cols)}{len(rows) + 3}"
+            )
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
 
 # ══════════════════════════════════════════════════════════════════════════
 # SHARED: build_analysis
